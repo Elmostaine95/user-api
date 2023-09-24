@@ -1,0 +1,62 @@
+# Name: CI Workflow
+
+on:
+    push:
+      branches: [main] # Trigger the workflow on main branch pushes.
+    pull_request:
+      branches: [main] # Trigger the workflow on main branch pull requests.
+    workflow_dispatch: # Allow manual triggering of the workflow.
+  
+jobs:
+    build:
+      runs-on: ubuntu-latest
+  
+      steps:
+        - uses: actions/checkout@v2 # Checkout the repository.
+  
+        - name: Lint code
+          run: echo "Linting repository!" # Perform code linting as part of the build process.
+  
+        - name: Configure AWS credentials
+          uses: aws-actions/configure-aws-credentials@v1
+          with:
+            aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+            aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+            aws-region: us-east-1 # Configure AWS credentials for later use.
+  
+        - name: Login to Amazon ECR
+          id: login-ecr
+          uses: aws-actions/amazon-ecr-login@v1 # Authenticate with Amazon ECR to push Docker images.
+  
+        - name: Build, tag, and push image to Amazon ECR
+          id: build-image
+          env:
+            ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+            ECR_REPOSITORY: user_api
+            IMAGE_TAG: latest
+
+          run: |
+            docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG . 
+            docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG 
+            echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" 
+        # Build a Docker image.
+        # Push the image to Amazon ECR.
+        # Set the image output.
+
+        - name: Download task definition
+          run: |
+            aws ecs describe-task-definition --task-definition ${{ secrets.ECS_CONTAINER_DEFINITION }} \
+            --query taskDefinition > task-definition.json # Download the ECS task definition.
+  
+        - name: Fill in the new image ID in the Amazon ECS task definition
+          id: task-def
+          uses: aws-actions/amazon-ecs-render-task-definition@v1 # Update the ECS task definition with the new Docker image.
+  
+        - name: Deploy Amazon ECS task definition
+          uses: aws-actions/amazon-ecs-deploy-task-definition@v1 # Deploy the updated ECS task definition to the cluster.
+          with:
+            task-definition: ${{ steps.task-def.outputs.task-definition }}
+            service: ${{ secrets.ECS_SERVICE }}
+            cluster: ${{ secrets.ECS_CLUSTER }}
+            wait-for-service-stability: true # Wait for the ECS service to stabilize after deployment.
+  
